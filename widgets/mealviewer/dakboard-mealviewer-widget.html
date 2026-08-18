@@ -33,8 +33,9 @@
 <script>
 (function () {
   // ---------------- CONFIG ----------------
-  var SCHOOL_SLUG = "SchoolName";           // <-- your school's MealViewer slug
-  var PROXY_URL = "";                       // <-- e.g. "https://mealviewer-proxy.yourname.workers.dev"
+  var SCHOOL_SLUG = "BlessedSacrament";       // <-- your school's MealViewer slug
+  var CHILD_NAME = "";                        // <-- e.g. "Emma" or "Alex" to personalize the widget
+  var PROXY_URL = "";                         // <-- e.g. "https://mealviewer-proxy.yourname.workers.dev"
   // -----------------------------------------
 
   function pad(n) { return n < 10 ? "0" + n : "" + n; }
@@ -82,14 +83,22 @@
     tomorrow.setDate(tomorrow.getDate() + 1);
     var isNextCalendarDay = target.toDateString() === tomorrow.toDateString();
 
-    var label;
+    var timeLabel;
     if (isSameDay) {
-      label = "Today's Lunch Menu";
+      timeLabel = "today";
     } else if (isNextCalendarDay) {
-      label = "Tomorrow's Lunch Menu";
+      timeLabel = "tomorrow";
     } else {
-      label = "Next School Day's Lunch Menu";
+      timeLabel = "next school day";
     }
+
+    var label;
+    if (CHILD_NAME) {
+      label = CHILD_NAME + "'s Menu (" + timeLabel + ")";
+    } else {
+      label = "Menu (" + timeLabel + ")";
+    }
+
     document.getElementById("mv-title").textContent = label;
   }
 
