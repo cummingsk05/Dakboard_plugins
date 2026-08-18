@@ -33,19 +33,31 @@
 <script>
 (function () {
   // ---------------- CONFIG ----------------
-  var SCHOOL_SLUG = "SchoolName";      // <-- your school's MealViewer slug
+  var SCHOOL_SLUG = "SchoolName";           // <-- your school's MealViewer slug
   var PROXY_URL = "";                       // <-- e.g. "https://mealviewer-proxy.yourname.workers.dev"
   // -----------------------------------------
 
   function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
-  function todayMMDDYYYY() {
+  function targetDate() {
     var d = new Date();
+    // After 2 PM, show the next school day's menu instead of today's.
+    if (d.getHours() >= 14) {
+      d.setDate(d.getDate() + 1);
+    }
+    // Skip weekends: if we land on Sat (6) or Sun (0), roll to Monday.
+    while (d.getDay() === 0 || d.getDay() === 6) {
+      d.setDate(d.getDate() + 1);
+    }
+    return d;
+  }
+
+  function formatMMDDYYYY(d) {
     return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "-" + d.getFullYear();
   }
 
   function buildUrl() {
-    var date = todayMMDDYYYY();
+    var date = formatMMDDYYYY(targetDate());
     var path = "/api/v4/school/" + encodeURIComponent(SCHOOL_SLUG) + "/" + date + "/" + date + "/";
     if (PROXY_URL) {
       // Proxy forwards ?path= to the real MealViewer endpoint
@@ -60,6 +72,26 @@
   // Item types to hide (e.g. milk cartons, condiments). Matched against
   // each item's "item_Type" field, case-insensitive. Leave empty to show all.
   var SKIP_ITEM_TYPES = ["MILK", "CONDIMENTS", "MISCELLANEOUS"];
+
+  function updateTitle() {
+    var today = new Date();
+    var target = targetDate();
+
+    var isSameDay = target.toDateString() === today.toDateString();
+    var tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    var isNextCalendarDay = target.toDateString() === tomorrow.toDateString();
+
+    var label;
+    if (isSameDay) {
+      label = "Today's Lunch Menu";
+    } else if (isNextCalendarDay) {
+      label = "Tomorrow's Lunch Menu";
+    } else {
+      label = "Next School Day's Lunch Menu";
+    }
+    document.getElementById("mv-title").textContent = label;
+  }
 
   function renderError(msg) {
     document.getElementById("mv-content").innerHTML =
@@ -83,47 +115,90 @@
       return;
     }
 
-    var html = "";
-    var foundAnyItem = false;
-
+    // Collect all blocks and categorize them
+    var allBlocks = [];
     for (var s = 0; s < schedules.length; s++) {
       var blocks = schedules[s].menuBlocks || [];
       for (var b = 0; b < blocks.length; b++) {
-        var block = blocks[b];
-        var lines = (block.cafeteriaLineList && block.cafeteriaLineList.data) || [];
-
-        var blockItemsHtml = "";
-        for (var l = 0; l < lines.length; l++) {
-          var line = lines[l];
-          var items = (line.foodItemList && line.foodItemList.data) || [];
-
-          for (var i = 0; i < items.length; i++) {
-            var item = items[i];
-            var itemType = (item.item_Type || "").toUpperCase();
-            if (SKIP_ITEM_TYPES.indexOf(itemType) !== -1) continue;
-            if (!item.item_Name) continue;
-
-            blockItemsHtml += "<li>" + item.item_Name.trim() + "</li>";
-            foundAnyItem = true;
-          }
-        }
-
-        if (blockItemsHtml) {
-          html += '<div style="margin-bottom: 12px;">';
-          if (block.blockName) {
-            html += '<div style="font-weight:600; opacity:0.8; margin-bottom:4px;">' + block.blockName + '</div>';
-          }
-          html += '<ul style="margin:0; padding-left: 1.2em;">' + blockItemsHtml + '</ul></div>';
-        }
+        allBlocks.push(blocks[b]);
       }
     }
 
-    document.getElementById("mv-content").innerHTML = foundAnyItem
-      ? html
-      : "No items listed today.";
+    // Separate breakfast and lunch blocks
+    var breakfastBlocks = [];
+    var lunchBlocks = [];
+    for (var bb = 0; bb < allBlocks.length; bb++) {
+      var blockName = (allBlocks[bb].blockName || "").toLowerCase();
+      if (blockName.indexOf("breakfast") !== -1) {
+        breakfastBlocks.push(allBlocks[bb]);
+      } else {
+        lunchBlocks.push(allBlocks[bb]);
+      }
+    }
+
+    var hasBreakfast = breakfastBlocks.length > 0;
+    var hasLunch = lunchBlocks.length > 0;
+
+    if (!hasBreakfast && !hasLunch) {
+      renderError("No items listed today.");
+      return;
+    }
+
+    // Render a single block's contents into HTML
+    function renderBlockContent(block) {
+      var lines = (block.cafeteriaLineList && block.cafeteriaLineList.data) || [];
+      var html = "";
+      for (var l = 0; l < lines.length; l++) {
+        var line = lines[l];
+        var items = (line.foodItemList && line.foodItemList.data) || [];
+
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var itemType = (item.item_Type || "").toUpperCase();
+          if (SKIP_ITEM_TYPES.indexOf(itemType) !== -1) continue;
+          if (!item.item_Name) continue;
+          html += "<li>" + item.item_Name.trim() + "</li>";
+        }
+      }
+      return html;
+    }
+
+    var containerStyle = hasBreakfast && hasLunch
+      ? 'display: flex; gap: 20px; flex-wrap: wrap;'
+      : '';
+
+    var columnStyle = hasBreakfast && hasLunch
+      ? 'flex: 1; min-width: 200px;'
+      : '';
+
+    var html = '<div style="' + containerStyle + '">';
+
+    if (hasBreakfast) {
+      html += '<div style="' + columnStyle + '">';
+      html += '<div style="font-weight:600; opacity:0.8; margin-bottom:8px; text-transform: uppercase; font-size: 0.9em;">Breakfast</div>';
+      html += '<ul style="margin:0; padding-left: 1.2em;">';
+      for (var bf = 0; bf < breakfastBlocks.length; bf++) {
+        html += renderBlockContent(breakfastBlocks[bf]);
+      }
+      html += '</ul></div>';
+    }
+
+    if (hasLunch) {
+      html += '<div style="' + columnStyle + '">';
+      html += '<div style="font-weight:600; opacity:0.8; margin-bottom:8px; text-transform: uppercase; font-size: 0.9em;">Lunch</div>';
+      html += '<ul style="margin:0; padding-left: 1.2em;">';
+      for (var ln = 0; ln < lunchBlocks.length; ln++) {
+        html += renderBlockContent(lunchBlocks[ln]);
+      }
+      html += '</ul></div>';
+    }
+
+    html += '</div>';
+    document.getElementById("mv-content").innerHTML = html;
   }
 
   function loadMenu() {
+    updateTitle();
     fetch(buildUrl())
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
