@@ -1,0 +1,206 @@
+<!--
+  DakBoard Widget Block: MealViewer WEEKLY Menu
+  =====================================================
+  Companion to dakboard-mealviewer-widget.html — this version shows the
+  whole school week (Mon-Fri) at once in a grid, instead of just one day.
+
+  HOW TO USE:
+  1. Add a new Widget Block on your DakBoard Custom Screen.
+  2. Paste this entire file's contents into it.
+  3. Edit the CONFIG section below (same settings as the daily widget:
+     SCHOOL_SLUG, CHILD_NAME, PROXY_URL, SKIP_ITEM_TYPES).
+  4. This widget is wide by design (5 day-columns) — give it a generous
+     block size, or place it below/beside your daily widgets.
+-->
+
+<div id="mv-week-widget" style="font-family: 'Helvetica Neue', Arial, sans-serif; color: #fff; width: 100%; height: 100%; box-sizing: border-box; padding: 12px; overflow: auto;">
+  <div id="mv-week-title" style="font-size: 1.4em; font-weight: 600; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.85;">
+    Weekly Menu
+  </div>
+  <div id="mv-week-content" style="font-size: 1em; line-height: 1.4;">
+    Loading menu…
+  </div>
+</div>
+
+<script>
+(function () {
+  // ---------------- CONFIG ----------------
+  var SCHOOL_SLUG = "BlessedSacrament";      // <-- your school's MealViewer slug
+  var CHILD_NAME = "";                        // <-- e.g. "Emma" to personalize the widget
+  var PROXY_URL = "";                         // <-- e.g. "https://mealviewer-proxy.yourname.workers.dev"
+
+  // Item types to hide (e.g. milk cartons, condiments). Matched against
+  // each item's "item_Type" field, case-insensitive. Leave empty to show all.
+  var SKIP_ITEM_TYPES = ["MILK", "CONDIMENTS", "MISCELLANEOUS"];
+  // -----------------------------------------
+
+  // Indexed by Date.getDay() (0=Sun...6=Sat); only Mon-Fri (indices 1-5) are ever used.
+  var DAY_NAMES_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function formatMMDDYYYY(d) {
+    return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "-" + d.getFullYear();
+  }
+
+  // Returns the Monday and Friday (as Date objects) of the school week
+  // that contains "today". If today is a weekend, returns next week's.
+  function getWeekRange() {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var dow = today.getDay(); // 0=Sun ... 6=Sat
+
+    var monday = new Date(today);
+    if (dow === 0) {
+      monday.setDate(today.getDate() + 1); // Sunday -> next Monday
+    } else if (dow === 6) {
+      monday.setDate(today.getDate() + 2); // Saturday -> next Monday
+    } else {
+      monday.setDate(today.getDate() - (dow - 1)); // back up to this week's Monday
+    }
+
+    var friday = new Date(monday);
+    friday.setDate(monday.getDate() + 4);
+
+    return { monday: monday, friday: friday };
+  }
+
+  function buildUrl(monday, friday) {
+    var path = "/api/v4/school/" + encodeURIComponent(SCHOOL_SLUG) + "/" +
+      formatMMDDYYYY(monday) + "/" + formatMMDDYYYY(friday) + "/";
+    if (PROXY_URL) {
+      return PROXY_URL.replace(/\/$/, "") + "/?path=" + encodeURIComponent(path);
+    }
+    return "https://api.mealviewer.com" + path;
+  }
+
+  function renderError(msg) {
+    document.getElementById("mv-week-content").innerHTML =
+      '<div style="opacity:0.7;">' + msg + '</div>';
+  }
+
+  function updateTitle(monday, friday) {
+    var rangeLabel = DAY_NAMES_SHORT[monday.getDay()] + " " + (monday.getMonth() + 1) + "/" + monday.getDate() +
+      " – " + DAY_NAMES_SHORT[friday.getDay()] + " " + (friday.getMonth() + 1) + "/" + friday.getDate();
+
+    var label = CHILD_NAME ? CHILD_NAME + "'s Weekly Menu" : "Weekly Menu";
+    label += "  ·  " + rangeLabel;
+
+    document.getElementById("mv-week-title").textContent = label;
+  }
+
+  // Extracts <li> items from a single menuBlock, skipping filtered item types.
+  function renderBlockContent(block) {
+    var lines = (block.cafeteriaLineList && block.cafeteriaLineList.data) || [];
+    var html = "";
+    for (var l = 0; l < lines.length; l++) {
+      var items = (lines[l].foodItemList && lines[l].foodItemList.data) || [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var itemType = (item.item_Type || "").toUpperCase();
+        if (SKIP_ITEM_TYPES.indexOf(itemType) !== -1) continue;
+        if (!item.item_Name) continue;
+        html += "<li>" + item.item_Name.trim() + "</li>";
+      }
+    }
+    return html;
+  }
+
+  // Given one day's menuSchedule entry, returns { breakfastHtml, lunchHtml }
+  function renderDaySchedule(schedule) {
+    var blocks = (schedule && schedule.menuBlocks) || [];
+    var breakfastHtml = "";
+    var lunchHtml = "";
+
+    for (var b = 0; b < blocks.length; b++) {
+      var block = blocks[b];
+      var blockName = (block.blockName || "").toLowerCase();
+      var content = renderBlockContent(block);
+      if (!content) continue;
+
+      if (blockName.indexOf("breakfast") !== -1) {
+        breakfastHtml += content;
+      } else {
+        lunchHtml += content;
+      }
+    }
+
+    return { breakfastHtml: breakfastHtml, lunchHtml: lunchHtml };
+  }
+
+  function renderWeek(data, monday) {
+    var schedules = (data && data.menuSchedules) || [];
+    if (!schedules.length) {
+      renderError("No menu found for this week.");
+      return;
+    }
+
+    // Build the 5 weekday dates (Mon-Fri) we requested, so every column
+    // renders even if a particular day has no data (holiday, etc).
+    var weekdays = [];
+    for (var i = 0; i < 5; i++) {
+      var d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      weekdays.push(d);
+    }
+
+    // Map schedules to weekdays. MealViewer returns one entry per requested
+    // day in order, so index-align; fall back gracefully if counts differ.
+    var html = '<div style="display: flex; gap: 12px;">';
+
+    for (var w = 0; w < weekdays.length; w++) {
+      var date = weekdays[w];
+      var schedule = schedules[w]; // index-aligned with requested Mon-Fri range
+      var dayResult = schedule ? renderDaySchedule(schedule) : { breakfastHtml: "", lunchHtml: "" };
+      var hasBreakfast = !!dayResult.breakfastHtml;
+      var hasLunch = !!dayResult.lunchHtml;
+      var isToday = date.toDateString() === new Date().toDateString();
+
+      html += '<div style="flex: 1; min-width: 140px; background: rgba(255,255,255,' +
+        (isToday ? '0.12' : '0.05') + '); border-radius: 8px; padding: 10px;' +
+        (isToday ? ' border: 1px solid rgba(255,255,255,0.35);' : '') + '">';
+
+      html += '<div style="font-weight:700; margin-bottom: 8px; text-align:center;">' +
+        DAY_NAMES_SHORT[date.getDay()] + ' <span style="opacity:0.6; font-weight:400;">' +
+        (date.getMonth() + 1) + '/' + date.getDate() + '</span></div>';
+
+      if (!hasBreakfast && !hasLunch) {
+        html += '<div style="opacity:0.5; font-size:0.85em; text-align:center;">No menu</div>';
+      } else {
+        if (hasBreakfast) {
+          html += '<div style="font-size:0.8em; font-weight:600; opacity:0.7; text-transform:uppercase; margin-bottom:2px;">Breakfast</div>';
+          html += '<ul style="margin:0 0 8px 0; padding-left: 1.1em; font-size:0.85em;">' + dayResult.breakfastHtml + '</ul>';
+        }
+        if (hasLunch) {
+          html += '<div style="font-size:0.8em; font-weight:600; opacity:0.7; text-transform:uppercase; margin-bottom:2px;">Lunch</div>';
+          html += '<ul style="margin:0; padding-left: 1.1em; font-size:0.85em;">' + dayResult.lunchHtml + '</ul>';
+        }
+      }
+
+      html += '</div>';
+    }
+
+    html += '</div>';
+    document.getElementById("mv-week-content").innerHTML = html;
+  }
+
+  function loadWeek() {
+    var range = getWeekRange();
+    updateTitle(range.monday, range.friday);
+
+    fetch(buildUrl(range.monday, range.friday))
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) { renderWeek(data, range.monday); })
+      .catch(function (err) {
+        console.error("MealViewer weekly widget error:", err);
+        renderError("Menu unavailable (see console — likely a CORS block; set up the proxy).");
+      });
+  }
+
+  loadWeek();
+  // Refresh once an hour, mainly to roll over to next week on Monday etc.
+  setInterval(loadWeek, 60 * 60 * 1000);
+})();
+</script>
