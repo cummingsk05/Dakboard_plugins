@@ -6,19 +6,10 @@
   2. Paste this entire file's contents into the widget's code/settings box.
   3. Edit the CONFIG section below:
        - SCHOOL_SLUG: MealViewer's URL-safe name for your school
-                      EXAMPLE: if the URL is 
-                               https://schools.mealviewer.com/school/SchoolName 
-                               then 'SchoolName' is the SCHOOL_SLUG value.
-       - PROXY_URL:   leave blank to try MealViewer directly first.
-                      If the menu never loads (check browser console for a
-                      CORS error), deploy the companion Cloudflare Worker
-                      (mealviewer-proxy-worker.js) and paste its URL here.
+       - PROXY_URL: leave blank to try MealViewer directly first
+       - ALLERGENS: list allergens to highlight
+       - CHILD_NAME: optional name to personalize the widget
   4. Resize the block on your DakBoard layout as needed.
-
-  FINDING YOUR SCHOOL_SLUG:
-  Go to https://www.mealviewer.com, search for your school, open its menu
-  page, and look at the network requests (or the page URL) for a segment
-  that matches your school's name with no spaces, e.g. "ElmwoodElementary".
 -->
 
 <div id="mv-widget" style="font-family: 'Helvetica Neue', Arial, sans-serif; color: #fff; width: 100%; height: 100%; box-sizing: border-box; padding: 12px;">
@@ -26,27 +17,30 @@
     Today's Lunch Menu
   </div>
   <div id="mv-content" style="font-size: 1.1em; line-height: 1.5;">
-    Loading menu…
+    Loading menu...
   </div>
 </div>
 
 <script>
 (function () {
   // ---------------- CONFIG ----------------
-  var SCHOOL_SLUG = "SchoolName";       // <-- your school's MealViewer slug
-  var CHILD_NAME = "";                        // <-- e.g. "Emma" or "Alex" to personalize the widget
-  var PROXY_URL = "";                         // <-- e.g. "https://mealviewer-proxy.yourname.workers.dev"
-  // -----------------------------------------
+  var SCHOOL_SLUG = "SchoolName";
+  var CHILD_NAME = "";
+  var PROXY_URL = "";
+  var ALLERGENS = []; // e.g. ["Peanuts", "Tree Nuts", "Shellfish"]
+
+  // Supported allergen labels from MealViewer-style responses:
+  // Milk, Eggs, Peanuts, Tree Nuts, Fish, Shellfish, Soy, Wheat,
+  // Sesame, Sulfites, Mustard, Celery, Lupin, Mollusks
+  // ----------------------------------------
 
   function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
   function targetDate() {
     var d = new Date();
-    // After 2 PM, show the next school day's menu instead of today's.
     if (d.getHours() >= 14) {
       d.setDate(d.getDate() + 1);
     }
-    // Skip weekends: if we land on Sat (6) or Sun (0), roll to Monday.
     while (d.getDay() === 0 || d.getDay() === 6) {
       d.setDate(d.getDate() + 1);
     }
@@ -61,50 +55,89 @@
     var date = formatMMDDYYYY(targetDate());
     var path = "/api/v4/school/" + encodeURIComponent(SCHOOL_SLUG) + "/" + date + "/" + date + "/";
     if (PROXY_URL) {
-      // Proxy forwards ?path= to the real MealViewer endpoint
       return PROXY_URL.replace(/\/$/, "") + "/?path=" + encodeURIComponent(path);
     }
     return "https://api.mealviewer.com" + path;
   }
 
-  // Set to true temporarily to see the raw JSON response on screen.
   var DEBUG_MODE = false;
-
-  // Item types to hide (e.g. milk cartons, condiments). Matched against
-  // each item's "item_Type" field, case-insensitive. Leave empty to show all.
   var SKIP_ITEM_TYPES = ["MILK", "CONDIMENTS", "MISCELLANEOUS"];
+
+  function normalizeValue(v) {
+    return String(v || "")
+      .toLowerCase()
+      .replace(/[_-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function extractAllergenStrings(item) {
+    var out = [];
+    var raw = item && (item.allergens || item.allergen || item.allergenList || item.allergenWarnings);
+
+    if (!raw) return out;
+
+    if (typeof raw === "string") {
+      out.push(raw);
+      return out;
+    }
+
+    if (Array.isArray(raw)) {
+      for (var i = 0; i < raw.length; i++) {
+        var v = raw[i];
+        if (!v) continue;
+        if (typeof v === "string") {
+          out.push(v);
+        } else if (typeof v === "object") {
+          out.push(v.name || v.label || v.allergen || v.value || JSON.stringify(v));
+        }
+      }
+      return out;
+    }
+
+    if (typeof raw === "object") {
+      for (var k in raw) {
+        if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+        if (raw[k]) out.push(k);
+      }
+    }
+
+    return out;
+  }
+
+  function hasAllergen(item) {
+    if (!ALLERGENS || ALLERGENS.length === 0) return false;
+
+    var itemAllergenValues = extractAllergenStrings(item).map(normalizeValue);
+
+    for (var a = 0; a < ALLERGENS.length; a++) {
+      var target = normalizeValue(ALLERGENS[a]);
+      if (!target) continue;
+
+      for (var i = 0; i < itemAllergenValues.length; i++) {
+        if (itemAllergenValues[i] === target) return true;
+        if (itemAllergenValues[i].indexOf(target) !== -1) return true;
+        if (target.indexOf(itemAllergenValues[i]) !== -1) return true;
+      }
+    }
+
+    return false;
+  }
 
   function updateTitle() {
     var today = new Date();
     var target = targetDate();
-
     var isSameDay = target.toDateString() === today.toDateString();
     var tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
     var isNextCalendarDay = target.toDateString() === tomorrow.toDateString();
-
-    var timeLabel;
-    if (isSameDay) {
-      timeLabel = "today";
-    } else if (isNextCalendarDay) {
-      timeLabel = "tomorrow";
-    } else {
-      timeLabel = "next school day";
-    }
-
-    var label;
-    if (CHILD_NAME) {
-      label = CHILD_NAME + "'s Menu (" + timeLabel + ")";
-    } else {
-      label = "Menu (" + timeLabel + ")";
-    }
-
+    var timeLabel = isSameDay ? "today" : (isNextCalendarDay ? "tomorrow" : "next school day");
+    var label = CHILD_NAME ? CHILD_NAME + "'s Menu (" + timeLabel + ")" : "Menu (" + timeLabel + ")";
     document.getElementById("mv-title").textContent = label;
   }
 
   function renderError(msg) {
-    document.getElementById("mv-content").innerHTML =
-      '<div style="opacity:0.7;">' + msg + '</div>';
+    document.getElementById("mv-content").innerHTML = '<div style="opacity:0.7;">' + msg + '</div>';
   }
 
   function renderMenu(data) {
@@ -124,7 +157,6 @@
       return;
     }
 
-    // Collect all blocks and categorize them
     var allBlocks = [];
     for (var s = 0; s < schedules.length; s++) {
       var blocks = schedules[s].menuBlocks || [];
@@ -133,7 +165,6 @@
       }
     }
 
-    // Separate breakfast and lunch blocks
     var breakfastBlocks = [];
     var lunchBlocks = [];
     for (var bb = 0; bb < allBlocks.length; bb++) {
@@ -153,33 +184,35 @@
       return;
     }
 
-    // Render a single block's contents into HTML
     function renderBlockContent(block) {
       var lines = (block.cafeteriaLineList && block.cafeteriaLineList.data) || [];
       var html = "";
       for (var l = 0; l < lines.length; l++) {
         var line = lines[l];
         var items = (line.foodItemList && line.foodItemList.data) || [];
-
         for (var i = 0; i < items.length; i++) {
           var item = items[i];
           var itemType = (item.item_Type || "").toUpperCase();
           if (SKIP_ITEM_TYPES.indexOf(itemType) !== -1) continue;
           if (!item.item_Name) continue;
-          html += "<li>" + item.item_Name.trim() + "</li>";
+
+          var allergenMatch = hasAllergen(item);
+          var liStyle = "";
+          var badge = "";
+
+          if (allergenMatch) {
+            liStyle = ' style="background-color: rgba(255, 0, 0, 0.2); padding: 4px 8px; border-radius: 4px; margin: 2px 0;"';
+            badge = '<span style="color: #ff6b6b; font-weight: bold; margin-right: 6px;">⚠️</span>';
+          }
+
+          html += "<li" + liStyle + ">" + badge + item.item_Name.trim() + "</li>";
         }
       }
       return html;
     }
 
-    var containerStyle = hasBreakfast && hasLunch
-      ? 'display: flex; gap: 20px; flex-wrap: wrap;'
-      : '';
-
-    var columnStyle = hasBreakfast && hasLunch
-      ? 'flex: 1; min-width: 200px;'
-      : '';
-
+    var containerStyle = hasBreakfast && hasLunch ? 'display: flex; gap: 20px; flex-wrap: wrap;' : '';
+    var columnStyle = hasBreakfast && hasLunch ? 'flex: 1; min-width: 200px;' : '';
     var html = '<div style="' + containerStyle + '">';
 
     if (hasBreakfast) {
@@ -221,7 +254,6 @@
   }
 
   loadMenu();
-  // Refresh once an hour in case DakBoard keeps the page open across midnight
   setInterval(loadMenu, 60 * 60 * 1000);
 })();
 </script>
